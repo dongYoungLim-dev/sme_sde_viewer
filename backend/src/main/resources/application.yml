@@ -1,0 +1,122 @@
+server:
+  port: 8080
+
+spring:
+  servlet:
+    multipart:
+      # 서비스가 건당 10MB 를 직접 검사해 친절한 메시지를 준다. 컨테이너 한도는 그보다 넉넉히 잡는다.
+      max-file-size: 12MB
+      max-request-size: 13MB
+  datasource:
+    url: jdbc:mariadb://localhost:3306/sdeboard?useUnicode=true&characterEncoding=utf8
+    username: sdeboard
+    password: sdeboard
+    driver-class-name: org.mariadb.jdbc.Driver
+  sql:
+    init:
+      # 스키마는 db/schema.sql 이 원본(노트 10_DB스키마 기준). 기본은 실행하지 않는다.
+      # 전체 재생성이 필요할 때만 DB_INIT=always 로 기동 → DROP 후 CREATE (데이터 전부 사라짐)
+      mode: ${DB_INIT:never}
+      schema-locations: classpath:db/schema.sql
+      continue-on-error: false
+  jpa:
+    hibernate:
+      ddl-auto: none            # 스키마는 db/schema.sql 로만 관리 (엔티티가 임의로 바꾸지 못하게)
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: false
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+
+# ITSM 연동 — 이 블록만 바꾸면 실제 서버로 전환된다 (코드 수정 불필요)
+itsm:
+  mock: ${ITSM_MOCK:false}                # true=폴링 안 함(빈 대시보드). false=실제 ITSM 폴링
+  base-url: ${ITSM_BASE_URL:https://itsm-dev.gdc.metanet.co.kr/api/externalapi}
+  origin: ${ITSM_ORIGIN:https://itsm-dev.gdc.metanet.co.kr}
+  endpoints:
+    login: /ims/login
+    my-todos: /my-page/my-to-do-request-operation
+    processing-detail: /requests/processing-service-request
+    direct-detail: /requests/direct-process-detail
+  headers:
+    accept-language: ko_KR
+    time-zone: "+09:00"
+  # 로그인 세션 정책 (A안 — ITSM 비밀번호 미저장)
+  #  keep-credential=true : 자격증명을 **메모리 세션 안에서만** 들고 있다가 accessToken(30분) 만료 시
+  #                         재로그인해 폴링을 이어간다. DB·로그에는 남지 않고, 재기동하면 사라진다.
+  #  keep-credential=false: 30분 뒤 폴링이 멈추고 사용자에게 재로그인을 요구한다.
+  session:
+    keep-credential: ${ITSM_KEEP_CREDENTIAL:true}
+    idle-minutes: 120       # 미사용 만료
+    max-minutes: 480        # 절대 만료 (refreshToken 수명 8시간)
+  poll:
+    enabled: ${ITSM_POLL_ENABLED:true}    # mock=true면 무시됨
+    interval-ms: 300000                   # 5분
+    page-size: 50                         # itemPerPage
+    max-pages: 20                         # 페이징 안전장치
+
+  # ── ITSM 변경 요청 상태 순번 ─────────────────────────────────────────
+  # ⚠️ 2026-09-22(UR-260922-1) — 11단계 진행률·버킷·단계 표시는 **폐기**됐다. 화면의 상태는 보드 4단계
+  #   (대기/작업중/작업완료/추적불가)다. 이 표는 이제 **할당 단계(INTAKE/LEADER/FINAL) 판정에 쓰는 순번**으로만 남는다
+  #   (`assign-from-seq` 이후면 SME 단계를 벗어난 것). bucket·progress 는 읽지 않는다(아래 값은 예전 기록으로 남겨 둔다).
+  #
+  # (아래는 폐기 전 설명) 진행률은 **오직 이 순번**에서 나온다. 버킷에서 뽑던 시절 "구현완료"가 상태명의 '완료' 때문에
+  # 100%로 튀고 다음 단계 "배포요청승인"이 90%로 떨어지는 역행이 있었다.
+  # 새 상태가 관측되면 seq 를 맞춰 한 줄 추가하면 된다(코드 수정 불필요).
+  #   code  : staCd — 확인된 것만 적는다. 비어 있으면 name(staNm)으로 매칭한다(공백 무시).
+  #   bucket: 색·집계용 버킷 (NEW/ANAL/DEV/TEST/DEP/DONE/HOLD)
+  #
+  # 2026-09-08 갱신 — 9단계 → 11단계.
+  #   `대기`(00581)·`배포완료` 는 **같은 요청 한 건의 이력에서 실측**됐다(CSD260907000046).
+  #   CI 차이가 아니라 애초에 등록된 9단계에 빠져 있던 것이다.
+  #   · `대기` 는 구현완료/통합테스트 다음, 배포요청승인 직전에 나타난다 → 배포 대기로 보고 bucket DEP.
+  #     (뜻이 확정되면 bucket 을 고칠 것. 이름이 짧아 '…대기' 류 상태를 흡수할 수 있는데,
+  #      resolve() 는 가장 긴 단계명을 우선하므로 '배포요청승인대기' 는 배포요청승인으로 간다)
+  #   · `배포완료` 는 flow 에 없으면 상태명 키워드로 DEP(90%)가 되어 배포승인(95%) 뒤에서
+  #     **진행률이 역행**했다 — 등록으로 그 구멍이 막혔다.
+  #   ⚠️ CI별 공정 확장 목록은 여전히 대기 중이다. 갈래가 여럿이면 순번 하나로는 부족하다.
+  assign-from-seq: 2      # 이 순번부터 '할당 요청됨'으로 본다 (= 공정할당요청)
+  flow:
+    - { seq:  1, code: "00566", name: "변경접수",         bucket: NEW,  progress: 5 }
+    - { seq:  2,                name: "공정할당요청",     bucket: NEW,  progress: 15 }
+    - { seq:  3, code: "00622", name: "공정처리",         bucket: DEV,  progress: 40 }
+    - { seq:  4,                name: "구현완료",         bucket: DEV,  progress: 60 }
+    - { seq:  5,                name: "통합테스트",       bucket: TEST, progress: 72 }
+    - { seq:  6, code: "00581", name: "대기",             bucket: DEP,  progress: 78 }
+    - { seq:  7,                name: "배포요청승인",     bucket: DEP,  progress: 84 }
+    - { seq:  8, code: "00584", name: "배포접수 및 준비", bucket: DEP,  progress: 88 }
+    - { seq:  9,                name: "배포승인",         bucket: DEP,  progress: 92 }
+    - { seq: 10,                name: "배포완료",         bucket: DEP,  progress: 96 }
+    - { seq: 11, code: "00635", name: "변경완료확인",     bucket: DONE, progress: 100 }
+
+  # 위 flow 보다 우선하는 강제 override. 상태코드로 버킷을 못박아야 할 때만 쓴다.
+  # (비워 두면 flow → 상태명 키워드 순으로 판정한다)
+  status-map: {}
+
+# CORS 허용 오리진 패턴.
+# 기본 경로는 Vite 프록시(:5173/api)라 CORS가 필요 없지만,
+# 원격(Tailscale·사내망 IP)에서 백엔드(:8080)를 직접 부르는 경우를 위해 패턴을 열어둔다.
+# ── SDE 조직 (ITSM 에 없는 값 — 우리가 정의한다) ─────────────────
+# 조직이 바뀌면 여기만 고친다. 코드에 상수로 박지 않는다.
+sde:
+  teams: [SDE1, SDE2, SDE3, AD]   # 가입 시 고를 수 있는 팀 (관측된 팀명과 합쳐 후보로 보여준다)
+  tiers: 5                        # 법인당 담당 차수 1~5 (2026-09-09 UR-260909-1 로 4→5). 늘어나면 이 값만 올린다
+  # 법인 **후보** 목록 (사용자 확인 2026-09-09). 표에 세울 줄이 아니라 리더가 고르는 후보다 —
+  # 담당 법인은 팀마다 다르고, 전부 세우면 관련 없는 법인이 빈 줄로 자리만 차지한다.
+  # ⚠️ ITSM 표기(req_comp_nm)와 글자가 다르면 같은 법인이 두 줄로 갈라진다. 관측값과 다른 항목은 화면이 '미관측' 으로 표시한다.
+  corps: [샘물, 식품, 엑소, 올가홀푸드, 푸드머스, 풀무원건강생활, 풀무원다논, 풀무원푸드앤컬처, 풀무원헬스케어, NOS, 메타넷]
+
+app:
+  # SME 첨부파일 저장 위치(2026-09-22, UR-260922-1). ⚠️ 컨테이너 안이 아니라 **호스트 볼륨**이어야 한다
+  # (docker-compose 가 ./uploads 를 여기에 붙인다) — 안 그러면 컨테이너를 다시 만들 때 파일이 사라진다.
+  upload-dir: ${APP_UPLOAD_DIR:/data/uploads}
+  # 대시보드에서 '신규 유입'으로 묶는 기준 — 우리 시스템에 **처음 나타난 지** 이 시간 안이면 신규다.
+  # 24시간이면 하루 한 번 여는 사람이 놓치지 않는다. 주말을 건너뛰려면 72 정도로 올린다.
+  new-request-hours: ${APP_NEW_HOURS:24}
+  cors-allowed-origin-patterns: ${APP_CORS_PATTERNS:http://localhost:*,http://127.0.0.1:*,http://100.*:*,http://192.168.*:*,http://10.*:*,http://*.ts.net:*,https://*.ts.net}
+
+logging:
+  level:
+    com.pulmuone.sdeboard: INFO

@@ -1,0 +1,113 @@
+services:
+  mariadb:
+    image: mariadb:11.4
+    container_name: sdeboard-mariadb
+    restart: unless-stopped
+    environment:
+      # ⚠️ 시간대 — 컨테이너 기본은 UTC 다. DB 가 CURRENT_TIMESTAMP 로 찍는 값도 서울 기준이어야 한다.
+      TZ: Asia/Seoul
+      MARIADB_DATABASE: sdeboard
+      MARIADB_USER: sdeboard
+      # ⚠️ 비밀번호는 하드코딩하지 않는다 — `.env`(gitignore 대상, `.env.example` 참고)에서 읽는다.
+      #    ⚠️ 이 값은 **빈 볼륨으로 처음 뜰 때만** 적용된다(mariadb 이미지 초기화 스크립트 규칙) —
+      #    이미 만들어진 DB 의 비밀번호를 바꾸려면 `ALTER USER` 로 직접 바꿔야 한다(여기 값만 바꿔서는 안 바뀐다).
+      MARIADB_PASSWORD: ${DB_APP_PASSWORD:?DB_APP_PASSWORD is not set — .env 파일을 만드세요(.env.example 참고)}
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?DB_ROOT_PASSWORD is not set — .env 파일을 만드세요(.env.example 참고)}
+    ports:
+      - "3306:3306"
+    volumes:
+      - sdeboard-db:/var/lib/mysql
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # Java 21 + Maven 을 Docker 이미지로 제공 (로컬 JDK/Maven 설치 불필요)
+  backend:
+    image: maven:3.9-eclipse-temurin-21
+    container_name: sdeboard-backend
+    restart: unless-stopped   # ⚠️ 클라우드 상시 운영 전제(2026-09-22) — 없으면 죽었을 때 사람이 수동 기동해야 한다
+    working_dir: /app
+    command: ["mvn", "-q", "spring-boot:run"]
+    environment:
+      # ⚠️ 시간대 — 이게 없으면 우리가 찍는 관측 시각(done_at·first_seen·observed_at…)이 9시간 이르다.
+      #    코드도 AppTime 으로 한 번 더 고정한다(배포처가 바뀌어도 조용히 되돌아가지 않게).
+      TZ: Asia/Seoul
+      APP_TIMEZONE: Asia/Seoul
+      SPRING_DATASOURCE_URL: jdbc:mariadb://mariadb:3306/sdeboard?useUnicode=true&characterEncoding=utf8
+      SPRING_DATASOURCE_USERNAME: sdeboard
+      SPRING_DATASOURCE_PASSWORD: ${DB_APP_PASSWORD:?DB_APP_PASSWORD is not set — .env 파일을 만드세요(.env.example 참고)}
+      # ITSM 연동: 서버 주소만 지정한다.
+      # ⚠️ 서비스 계정(ITSM_SVC_ID/PW)은 더 이상 쓰지 않는다 —
+      #    각 사용자가 로그인할 때 자기 ITSM 계정으로 인증하고, 비밀번호는 저장하지 않는다.
+      ITSM_MOCK: "false"
+      ITSM_BASE_URL: https://pulmuone-itsm.metanet.co.kr/api/externalapi
+      ITSM_ORIGIN: https://pulmuone-itsm.metanet.co.kr
+      # 원격(Tailscale 등)에서 백엔드를 직접 호출할 때 허용할 오리진 패턴 (프록시 경유면 불필요)
+      # APP_CORS_PATTERNS: "http://localhost:*,http://100.*:*,http://*.ts.net:*"
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./backend:/app
+      - sdeboard-m2:/root/.m2      # Maven 의존성 캐시 (재기동 빠르게)
+      # SME 첨부파일(2026-09-22, UR-260922-1). ⚠️ 컨테이너 안에 두면 다시 만들 때 사라진다 — 호스트 폴더에 둔다.
+      #   백업 서비스도 이 폴더를 읽어 함께 묶는다(DB 덤프만으로는 파일이 안 돌아온다).
+      - ./uploads:/data/uploads
+    depends_on:
+      mariadb:
+        condition: service_healthy
+
+  # Node 20 을 Docker 이미지로 제공 (로컬 Node 설치 불필요)
+  frontend:
+    image: node:20-alpine
+    container_name: sdeboard-frontend
+    restart: unless-stopped   # ⚠️ 클라우드 상시 운영 전제(2026-09-22) — 없으면 죽었을 때 사람이 수동 기동해야 한다
+    working_dir: /app
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    environment:
+      TZ: Asia/Seoul
+      BACKEND_URL: http://backend:8080   # vite 프록시 대상 (컨테이너 네트워크)
+      # Vite 는 Host 헤더를 검사한다. Tailscale MagicDNS(*.ts.net)는 기본 허용해 두었고,
+      # 다른 호스트명으로 접속하려면 여기에 추가한다. 'all' 이면 전부 허용(신뢰된 망에서만).
+      VITE_ALLOWED_HOSTS: ${VITE_ALLOWED_HOSTS:-.ts.net}
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - sdeboard-node-modules:/app/node_modules   # 컨테이너 전용 node_modules (호스트 바이너리와 분리)
+    depends_on:
+      - backend
+
+  # DB 백업 — 매일 03:00, 14일 보관. ⚠️ 이 DB 에는 **ITSM 어디에도 없는 데이터**가 있다
+  # (가입 정보·인력풀·담당 법인·분석 노트) + **재동기화로도 못 돌아오는 관측 기록**
+  # (상태 이력·완료 관측 시각·first_seen). 미러라고 다 되살아나는 게 아니다.
+  # ⚠️ 덤프는 **DB 볼륨이 아니라 호스트 경로**(./backups)에 쌓인다 — 같은 볼륨에 두면 백업이 아니다.
+  backup:
+    image: mariadb:11.4
+    container_name: sdeboard-backup
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Seoul                # 03:00 은 서울 기준이어야 한다(컨테이너 기본은 UTC)
+      DB_HOST: mariadb
+      DB_NAME: sdeboard
+      DB_USER: sdeboard
+      DB_PASS: ${DB_APP_PASSWORD:?DB_APP_PASSWORD is not set — .env 파일을 만드세요(.env.example 참고)}
+      KEEP_DAYS: "14"
+      AT_HOUR: "03"
+      # 연습 복원(restore.sh --dry-run)이 딴 DB 를 만들었다 지울 때만 쓴다. 백업 자체는 앱 계정으로 받는다
+      DB_ROOT_PASS: ${DB_ROOT_PASSWORD:?DB_ROOT_PASSWORD is not set — .env 파일을 만드세요(.env.example 참고)}
+    entrypoint: ["/bin/sh", "/backup/run.sh"]
+    volumes:
+      - ./ops/backup:/backup:ro
+      - ./backups:/backups          # ← 여기에 날짜별 .sql.gz 가 쌓인다
+      - ./uploads:/uploads:ro       # SME 첨부파일 — DB 덤프와 같은 시점에 uploads-*.tar.gz 로 묶는다
+    depends_on:
+      mariadb:
+        condition: service_healthy
+
+volumes:
+  sdeboard-db:
+  sdeboard-m2:
+  sdeboard-node-modules:
