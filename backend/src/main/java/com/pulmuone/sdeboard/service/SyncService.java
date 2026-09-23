@@ -39,6 +39,7 @@ public class SyncService {
     private final ItsmResponseMapper mapper;
     private final ItsmRequestRepository reqRepo;
     private final RequestOwnerRepository ownerRepo;
+    private final RequestScheduleRepository scheduleRepo;
     private final RequestStatusHistoryRepository histRepo;
     private final SyncLogRepository syncLogRepo;
     private final SessionRegistry sessions;
@@ -95,13 +96,26 @@ public class SyncService {
                 target.setSyncedAt(now);
                 // 추적불가였던 건이 다시 누군가의 To-Do 에 나타났다 — 스케줄 없이 사라졌던 것이므로 대기로 돌아간다.
                 if (BoardStatus.UNTRACKED.equals(target.getWorkStatus())) target.setWorkStatus(BoardStatus.WAITING);
+                // ⚠️ 완료로 봤던 건이 ITSM 에서 재오픈돼 다시 To-Do 에 나타났다 — ITSM 이 "재오픈" 을 알려주지
+                // 않으므로(완료 시각도 안 주듯) 이렇게 다시 나타나는 것 자체가 유일한 신호다(`UR-260923-1`).
+                // 되돌아간 자리는 일정(스케줄) 유무로 정한다 — ACTIVE 일정이 남아 있으면 작업중, 없으면 대기.
+                // `done_at`/수동확정 흔적도 같이 지운다 — 안 지우면 "완료" 필터(`done_at IS NOT NULL`)가
+                // 지금 활성인 건을 계속 완료 목록에 붙잡아 둔다(바로 이번 버그).
+                if (BoardStatus.DONE.equals(target.getWorkStatus())) {
+                    boolean scheduled = scheduleRepo.findFirstByReqNoAndStatus(reqNo, RequestSchedule.ACTIVE).isPresent();
+                    target.setWorkStatus(scheduled ? BoardStatus.IN_PROGRESS : BoardStatus.WAITING);
+                    target.setDoneAt(null);
+                    target.setCompletedManuallyBy(null);
+                    target.setCompletedManuallyAt(null);
+                    log.info("완료 건 재오픈 감지 — 다시 ITSM To-Do 에 나타남 reqNo={} → {}", reqNo, target.getWorkStatus());
+                }
 
                 boolean statusChanged   = existing != null && !Objects.equals(oldStatus, target.getWorkStatus());
                 boolean staNmChanged    = existing != null && !Objects.equals(oldStaNm, target.getItsmStaNm());
                 boolean assigneeChanged = existing != null && !Objects.equals(oldAssignee, target.getAssigneeName());
                 if (existing == null || statusChanged || staNmChanged || assigneeChanged) target.setLastChangedAt(now);
                 // 완료를 **처음 본** 시각을 박아 둔다. ITSM 이 완료 시각을 주지 않아 이것이 유일한 근거다.
-                // 한 번 채워지면 다시 쓰지 않는다(상태가 되돌아가도 최초 관측이 기준).
+                // 한 번 채워지면(재오픈으로 지워지기 전까지는) 다시 쓰지 않는다 — 같은 완료를 두 번 관측해도 최초 시각을 지킨다.
                 if (BoardStatus.DONE.equals(target.getWorkStatus()) && target.getDoneAt() == null) target.setDoneAt(now);
                 reqRepo.save(target);
                 upserted++;

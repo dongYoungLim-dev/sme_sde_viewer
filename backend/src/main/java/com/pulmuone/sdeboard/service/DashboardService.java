@@ -24,6 +24,7 @@ import com.pulmuone.sdeboard.domain.RequestComment;
 import com.pulmuone.sdeboard.domain.RequestNote;
 import com.pulmuone.sdeboard.domain.RequestStatusHistory;
 import com.pulmuone.sdeboard.domain.SdeAssignment;
+import com.pulmuone.sdeboard.domain.TeamCorp;
 import com.pulmuone.sdeboard.repo.*;
 import com.pulmuone.sdeboard.security.SessionRegistry;
 import com.pulmuone.sdeboard.security.UserSession;
@@ -51,6 +52,7 @@ public class DashboardService {
     private final AppUserRepository userRepo;
     private final RequestOwnerRepository ownerRepo;
     private final SdeAssignmentRepository poolRepo;
+    private final TeamCorpRepository teamCorpRepo;
     // 서비스가 아니라 리포지토리를 직접 쓴다 — RequestNoteService 가 이 클래스를 쓰므로 순환이 된다
     private final RequestNoteRepository noteRepo;
     private final NoteReadRepository noteReadRepo;
@@ -312,7 +314,26 @@ public class DashboardService {
                 me.getCorpNm(), me.getTeam(),
                 scopeLabel, members.size(), linked,
                 s.getSyncState(), s.getSyncMessage(), s.getLastSyncAt(),
-                props.getSession().isKeepCredential());
+                props.getSession().isKeepCredential(), assignedLeaders(me, loggedIn));
+    }
+
+    /**
+     * SME 가 관리하는 법인의 담당 SDE 리더(정·부) 전부 — {@code team_corp}(담당 법인표) 로 찾는다.
+     *
+     * <p>⚠️ 인력풀·요청 목록의 "동기화된 사람만 보인다"는 우연에 기대지 않는다(`UR-260923-2`).
+     * 그 리더가 지금 ITSM 건을 들고 있는지, 로그인 중인지와 완전히 무관하게 — **팀이 이 법인을
+     * 담당하기로 등록한 순간부터** 항상 나온다. SME 가 아니면 빈 목록(리더/SDE 는 자기 팀을 이미 안다).
+     */
+    private List<LeaderContactView> assignedLeaders(AppUser me, Set<Long> loggedIn) {
+        if (!"SME".equals(me.getRole()) || !notBlank(me.getCorpNm())) return List.of();
+        String team = teamCorpRepo.findByCorpNm(me.getCorpNm()).map(TeamCorp::getTeam).orElse(null);
+        if (!notBlank(team)) return List.of();
+        return userRepo.findByRoleAndTeam("SDE_LEADER", team).stream()
+                .sorted(Comparator.comparing((AppUser u) -> !"MAIN".equals(u.getLeaderRank()))
+                        .thenComparing(AppUser::getName, Comparator.nullsLast(String::compareTo)))
+                .map(u -> new LeaderContactView(u.getId(), u.getName(), u.getLoginId(), u.getLeaderRank(),
+                        "LINKED".equals(u.getLinkStatus()) && (u.getLastSyncAt() != null || loggedIn.contains(u.getId()))))
+                .toList();
     }
 
     public List<RequestView> list(UserSession session, String filter) {

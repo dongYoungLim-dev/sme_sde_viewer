@@ -27,7 +27,7 @@ class ExportServiceTest {
 
     private static final MeResponse ME = new MeResponse("p_meta.hong", "홍길동", "SME", null,
             "풀무원푸드앤컬처", null, "풀무원푸드앤컬처 법인", 3, 1,
-            "OK", null, LocalDateTime.now(), false);
+            "OK", null, LocalDateTime.now(), false, List.of());
 
     private static RequestView row(String reqNo, String stage) {
         return row(reqNo, stage, null);

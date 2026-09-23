@@ -120,7 +120,8 @@ class DashboardServiceScopeTest {
         lenient().when(commentRepo.findByReqNoIn(any())).thenReturn(List.of());
         commentReadRepo = mock(CommentReadRepository.class);
         lenient().when(commentReadRepo.findByUserIdAndReqNoIn(any(), any())).thenReturn(List.of());
-        svc = new DashboardService(reqRepo, histRepo, attRepo, userRepo, ownerRepo, poolRepo, noteRepo,
+        svc = new DashboardService(reqRepo, histRepo, attRepo, userRepo, ownerRepo, poolRepo,
+                mock(TeamCorpRepository.class), noteRepo,
                 noteReadRepo, commentRepo, commentReadRepo, sessions, new ItsmProperties(),
                 mock(RequestScheduleRepository.class), mock(RequestFileRepository.class));
 

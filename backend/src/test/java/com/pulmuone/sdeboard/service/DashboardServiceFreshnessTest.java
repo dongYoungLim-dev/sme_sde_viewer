@@ -86,7 +86,8 @@ class DashboardServiceFreshnessTest {
         lenient().when(commentRepo.findByReqNoIn(any())).thenReturn(List.of());
         lenient().when(commentReadRepo.findByUserIdAndReqNoIn(any(), any())).thenReturn(List.of());
 
-        svc = new DashboardService(reqRepo, histRepo, attRepo, userRepo, ownerRepo, poolRepo, noteRepo,
+        svc = new DashboardService(reqRepo, histRepo, attRepo, userRepo, ownerRepo, poolRepo,
+                mock(TeamCorpRepository.class), noteRepo,
                 noteReadRepo, commentRepo, commentReadRepo, sessions, new ItsmProperties(),
                 mock(RequestScheduleRepository.class), mock(RequestFileRepository.class));
         // yml `app.new-request-hours` 기본값(24) — 스프링 컨테이너 밖 단위테스트라 직접 채운다
