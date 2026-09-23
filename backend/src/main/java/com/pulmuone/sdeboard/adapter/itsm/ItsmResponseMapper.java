@@ -96,7 +96,10 @@ public class ItsmResponseMapper {
         r.setReqNo(text(n, F_REQNO));
         r.setTitle(text(n, F_TITLE));
         r.setRequester(text(n, F_REQR));
-        r.setReqCompNm(text(n, F_COMPNM));
+        // ⚠️ 계정(역할)마다 응답에 이 필드가 빠질 수 있다 — 없으면 덮어쓰지 않고 기존 값을 지킨다.
+        //    (SME 화면은 이 값으로 법인을 판정하므로, 한 번 null 로 덮이면 그 건이 SME 화면에서 조용히 사라진다)
+        String compNm = text(n, F_COMPNM);
+        if (compNm != null && !compNm.isBlank()) r.setReqCompNm(compNm);
         r.setReqCatNm(text(n, F_CATNM));
         r.setCompCd(text(n, F_COMPCD));
         r.setReqTypCd(text(n, F_TYP_CD));

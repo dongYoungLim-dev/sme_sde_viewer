@@ -149,15 +149,19 @@ public class DashboardService {
     }
 
     /**
-     * {@code ids} 가 (과거 포함) 소유했던 요청번호 — 단 **이관된 건은 뺀다**(`UR-260916-1`).
+     * {@code ids} 가 (과거 포함) 소유했던 요청번호 — 단 **이관된 건, 그리고 완전히 끝난 뒤엔
+     * 마지막 담당자가 아니었던 건은 뺀다**(`UR-260916-1`, 2026-09-23 확장).
      *
      * <p>{@code active=false} 행을 무조건 살려 두면 "완료돼서 내려간 것"과 "남에게 넘어가서
-     * 내려간 것"을 구분하지 못한다. 전자는 완료 이력으로 계속 남아야 하지만, 후자는 SDE 본인
-     * 화면에 남을 이유가 없다(요청자 표현: "SDE 끼리는 목록 공유 필요가 없다").
+     * 내려간 것"을 구분하지 못한다. 어느 쪽이든 <b>거쳐만 간 사람 화면에 남을 이유가 없다</b>
+     * (요청자 결정: "SDE 끼리는 처리 현황을 공유할 이유가 없다 — 거쳐 갔다는 건 리더의 재배정이나
+     * 다른 작업으로 바빠 넘긴 것일 뿐"). 작업완료든 추적불가든 똑같이 적용한다 — 최종 상태를 가리지 않는다.
      *
      * <p>판정: {@code ids} 안에서 그 요청을 <b>아무도 active 로 안 들고 있는데</b>, {@code ids} <b>밖의
-     * 누군가는 여전히 active</b> 면 — 이관된 것이다. {@code ids} 밖에도 아무도 active 가 없으면(전원
-     * 종료) 완료 이력으로 남긴다. {@code ids} 안에 한 명이라도 active 면 애초에 뺄 이유가 없다.
+     * 누군가는 여전히 active</b> 면 — 이관된 것이니 뺀다. {@code ids} 안에 한 명이라도 active 면 그대로 남긴다.
+     * 아무도(범위 안팎 전부) active 가 아니면(전원 종료) — 그 요청을 <b>가장 마지막까지</b>(lastSeen 최댓값)
+     * 들고 있었던 단 한 사람에게만 남긴다. 리더는 팀 전체가 {@code ids} 라 마지막 담당자가 팀원이기만 하면
+     * 그대로 보인다 — 이 규칙이 막는 건 팀을 벗어난 "거쳐간 사람"뿐이다.
      *
      * <p>이 구분은 {@link #todoStates} 의 {@code inTodo}(전체 소유자 기준, 2026-09-08 결정)와는
      * 다른 질문에 답한다 — 거기는 "아직 누군가의 할 일에 있나", 여기는 "그게 <b>이 범위의</b> 일인가".
@@ -172,14 +176,23 @@ public class DashboardService {
         List<String> needCheck = activeWithinScope.entrySet().stream()
                 .filter(e -> !e.getValue()).map(Map.Entry::getKey).toList();
         Set<Long> idSet = Set.copyOf(ids);
-        Set<String> transferredAway = needCheck.isEmpty() ? Set.of()
-                : ownerRepo.findByReqNoIn(needCheck).stream()
-                        .filter(o -> o.isActive() && !idSet.contains(o.getUserId()))
-                        .map(RequestOwner::getReqNo)
-                        .collect(Collectors.toSet());
+        Set<String> keepClosed = new HashSet<>();
+        if (!needCheck.isEmpty()) {
+            Map<String, List<RequestOwner>> byReq = ownerRepo.findByReqNoIn(needCheck).stream()
+                    .collect(Collectors.groupingBy(RequestOwner::getReqNo));
+            byReq.forEach((reqNo, owners) -> {
+                boolean activeOutside = owners.stream().anyMatch(o -> o.isActive() && !idSet.contains(o.getUserId()));
+                if (activeOutside) return;                          // 이관됨 — 뺀다
+                RequestOwner last = owners.stream()
+                        .max(Comparator.comparing(RequestOwner::getLastSeen).thenComparing(RequestOwner::getId))
+                        .orElse(null);
+                if (last != null && idSet.contains(last.getUserId())) keepClosed.add(reqNo);
+            });
+        }
 
-        return activeWithinScope.keySet().stream()
-                .filter(reqNo -> !transferredAway.contains(reqNo))
+        return activeWithinScope.entrySet().stream()
+                .filter(e -> e.getValue() || keepClosed.contains(e.getKey()))
+                .map(Map.Entry::getKey)
                 .collect(Collectors.toSet());
     }
 
