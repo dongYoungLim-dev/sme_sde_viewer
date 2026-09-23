@@ -326,7 +326,11 @@ public class DashboardService {
      */
     private List<LeaderContactView> assignedLeaders(AppUser me, Set<Long> loggedIn) {
         if (!"SME".equals(me.getRole()) || !notBlank(me.getCorpNm())) return List.of();
-        String team = teamCorpRepo.findByCorpNm(me.getCorpNm()).map(TeamCorp::getTeam).orElse(null);
+        String mine = normCorp(me.getCorpNm());
+        String team = teamCorpRepo.findAll().stream()
+                .filter(tc -> mine.equals(normCorp(tc.getCorpNm())))
+                .map(TeamCorp::getTeam)
+                .findFirst().orElse(null);
         if (!notBlank(team)) return List.of();
         return userRepo.findByRoleAndTeam("SDE_LEADER", team).stream()
                 .sorted(Comparator.comparing((AppUser u) -> !"MAIN".equals(u.getLeaderRank()))
