@@ -51,9 +51,8 @@ services:
       #    Spring 자체 CORS 필터에 걸려 403이 난다 — 화면 로딩(GET)은 멀쩡해서 원인을 헷갈리기 쉽다.
       #    기본값(application.yml)은 사설망·Tailscale(ts.net) 패턴뿐이라 **공인 IP·도메인으로 접속하면
       #    반드시 여기에 추가해야 한다.** 비워두면(`.env` 미설정) 아래 기본값 그대로 간다.
-      #    ⚠️ 49.247.161.28 은 현재 운영 서버의 공인 IP(2026-09-23 확인) — 이 배포가 다른 IP로
-      #    옮겨가면 여기도 같이 바꾸거나, `.env` 의 APP_CORS_PATTERNS 로 덮어쓸 것.
-      APP_CORS_PATTERNS: ${APP_CORS_PATTERNS:-http://localhost:*,http://127.0.0.1:*,http://49.247.161.28:*,http://100.*:*,http://192.168.*:*,http://10.*:*,http://*.ts.net:*,https://*.ts.net}
+      APP_CORS_PATTERNS: ${APP_CORS_PATTERNS:-http://localhost:*,http://127.0.0.1:*,http://100.*:*,http://192.168.*:*,http://10.*:*,http://*.ts.net:*,https://*.ts.net}
+      # APP_CORS_PATTERNS: "http://localhost:*,http://127.0.0.1:*,http://49.247.161.28:*"
     ports:
       - "8080:8080"
     volumes:
