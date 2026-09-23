@@ -52,6 +52,7 @@ services:
       #    기본값(application.yml)은 사설망·Tailscale(ts.net) 패턴뿐이라 **공인 IP·도메인으로 접속하면
       #    반드시 여기에 추가해야 한다.** 비워두면(`.env` 미설정) 아래 기본값 그대로 간다.
       APP_CORS_PATTERNS: ${APP_CORS_PATTERNS:-http://localhost:*,http://127.0.0.1:*,http://100.*:*,http://192.168.*:*,http://10.*:*,http://*.ts.net:*,https://*.ts.net}
+      # APP_CORS_PATTERNS: "http://localhost:*,http://127.0.0.1:*,http://49.247.161.28:*"
     ports:
       - "8080:8080"
     volumes:
